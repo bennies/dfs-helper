@@ -1,0 +1,7 @@
+target
+.idea
+*.iml
+.DS_Store
+package-lock.json
+node_modules/
+.deploy

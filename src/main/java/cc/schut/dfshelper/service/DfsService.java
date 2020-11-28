@@ -19,6 +19,7 @@ import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Stack;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -91,62 +92,66 @@ public class DfsService {
             return null;
         }
 
+        private Stack<Path> stack = new Stack();
+
         public void deleteDfsSubPaths(Path path, long olderThan) throws IOException, InterruptedException {
-            if (verbose) {
-                LOG.info("Starting dfs scan on path {}", path);
-            }
-            RemoteIterator<LocatedFileStatus> it = fileSystem.listLocatedStatus(path);
-            while (it.hasNext()) {
-                LocatedFileStatus lfs = it.next();
-                totalCount.incrementAndGet();
-
-                LocalDate now = LocalDate.now();
-                LocalDate epoch = Instant.ofEpochMilli(lfs.getModificationTime())
-                        .atZone(ZoneId.systemDefault()).toLocalDate();
-                long daysBetween = ChronoUnit.DAYS.between(epoch, now);
-
-                long objectCount = 0;
-                if (lfs.isDirectory()) {
-                    try {
-                        ContentSummary contentSummary = fileSystem.getContentSummary(lfs.getPath());
-                        objectCount = contentSummary.getDirectoryCount() + contentSummary.getFileCount();
-                    } catch (FileNotFoundException exception) {
-                        LOG.info("File not found {}", lfs.getPath());
-                    }
-                    if (objectCount > 1 && daysBetween > olderThan) {
-                        // Recursively walk through directories deleting old files.
-                        deleteDfs(lfs.getPath(), olderThan);
-
-                        // After we are done recount because it might now be empty.
-                        ContentSummary contentSummary = fileSystem.getContentSummary(lfs.getPath());
-                        objectCount = contentSummary.getDirectoryCount() + contentSummary.getFileCount();
-                    }
+            LocalDate now = LocalDate.now();
+            stack.push(path);
+            while (!stack.empty()) {
+                Path pathToWalk = stack.pop();
+                if (verbose) {
+                    LOG.info("Starting dfs scan on path {}", pathToWalk);
                 }
+                RemoteIterator<LocatedFileStatus> it = fileSystem.listLocatedStatus(pathToWalk);
+                while (it.hasNext()) {
+                    LocatedFileStatus lfs = it.next();
+                    LocalDate epoch = Instant.ofEpochMilli(lfs.getModificationTime())
+                            .atZone(ZoneId.systemDefault()).toLocalDate();
+                    long daysBetween = ChronoUnit.DAYS.between(epoch, now);
 
-                // doing the actual delete
-                if (daysBetween > olderThan && (objectCount == 1 || objectCount == 0)) {
-                    if (verbose) {
-                        LOG.info(String.format("Deleting %s, %s , %s , %s days old",
-                                lfs.isDirectory() ? "d:" + objectCount : "f",
-                                lfs.getPath().toUri(),
-                                daysBetween)
-                        );
-                    }
-                    if (!dryRun) {
-                        fileSystem.delete(lfs.getPath(), Boolean.FALSE);
-
-                        if (deleteCount.incrementAndGet() % 100 == 0) {
-                            LOG.info("Delete count {} , Total count {}", deleteCount.get(), totalCount.get());
+                    long objectCount = 0;
+                    if (lfs.isDirectory()) {
+                        try {
+                            ContentSummary contentSummary = fileSystem.getContentSummary(lfs.getPath());
+                            objectCount = contentSummary.getDirectoryCount() + contentSummary.getFileCount();
+                        } catch (FileNotFoundException exception) {
+                            LOG.info("File not found {}", lfs.getPath());
+                        }
+                        if (objectCount > 1 && daysBetween > olderThan) {
+                            stack.push(lfs.getPath());
                         }
                     }
-                } else {
-                    if (verbose) {
-                        LOG.info("Not deleting {} count:{}", lfs.getPath(), objectCount);
+
+                    // check if you can delete it if not and it's a directory add it to the stack.
+                    // doing the actual delete
+                    if (daysBetween > olderThan && (objectCount == 1 || objectCount == 0)) {
+                        if (verbose) {
+                            LOG.info(String.format("Deleting %s, %s , %s , %s days old",
+                                    lfs.isDirectory() ? "d:" + objectCount : "f",
+                                    lfs.getPath().toUri(),
+                                    daysBetween)
+                            );
+                        }
+                        if (!dryRun) {
+                            fileSystem.delete(lfs.getPath(), Boolean.FALSE);
+
+                            deleteCount.incrementAndGet();
+                            if ((stack.size() != 0 && stack.size() % 100 == 0)
+                                    || (totalCount.get() != 0 && totalCount.get() % 100 == 0)
+                                    || (deleteCount.get() != 0 && deleteCount.get() % 100 == 0)
+                                ) {
+                                LOG.info("Delete count {} , Total count {}, stack size {}", deleteCount.get(), totalCount.get(), stack.size());
+                            }
+                        }
+                    } else {
+                        if (verbose) {
+                            LOG.info("Not deleting {} count:{}", lfs.getPath(), objectCount);
+                        }
                     }
                 }
-            }
-            if (verbose) {
-                LOG.info("Finished dfs scan on path {}", path);
+                if (verbose) {
+                    LOG.info("Finished dfs scan on path {}", path);
+                }
             }
         }
     }

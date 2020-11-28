@@ -33,6 +33,9 @@ public class MainApplication implements CommandLineRunner {
                 case "--olderthan":
                     olderThan = nameValue[1];
                     break;
+                case "--threads":
+                    dfsService.setThreads(Integer.valueOf(nameValue[1]));
+                    break;
                 case "--dryrun":
                     dfsService.setDryRun(Boolean.TRUE);
                     break;

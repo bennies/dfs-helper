@@ -33,24 +33,22 @@ public class DfsService {
     private boolean dryRun = false;
     private boolean verbose = false;
     private int threads = 8;
+    private Configuration conf = new Configuration();
 
     public void setThreads(int threads) {
         this.threads = threads;
     }
 
-    private FileSystem fileSystem;
     private AtomicLong deleteCount = new AtomicLong(0);
     private AtomicLong totalCount = new AtomicLong(0);
 
     @PostConstruct
     public void init() throws IOException {
-        Configuration conf = new Configuration();
         conf.addResource(new Path("/etc/hadoop/conf/core-site.xml"));
         conf.addResource(new Path("/etc/hadoop/conf/hdfs-site.xml"));
         conf.set("hadoop.security.authentication", "kerberos");
         conf.set("hadoop.security.authorization", "true");
         UserGroupInformation.setConfiguration(conf);
-        fileSystem = FileSystem.get(conf);
     }
 
     public void setDryRun(boolean dryRun) {
@@ -65,7 +63,7 @@ public class DfsService {
         if (verbose) {
             LOG.info("Starting dfs scan on path {}", path);
         }
-        RemoteIterator<LocatedFileStatus> it = fileSystem.listLocatedStatus(path);
+        RemoteIterator<LocatedFileStatus> it = FileSystem.get(conf).listLocatedStatus(path);
         ExecutorService executor = Executors.newFixedThreadPool(threads);
         List<Callable<String>> taskList = new ArrayList<>();
 
@@ -75,11 +73,13 @@ public class DfsService {
             taskList.add(deleteTask);
         }
         List<Future<String>> results = executor.invokeAll(taskList);
+        executor.shutdown();
     }
 
     public class DeleteTask implements Callable {
         private Path path;
         private long olderThan;
+        private FileSystem fileSystem;
 
         public DeleteTask(Path path, long olderThan) {
             this.path = path;
@@ -88,6 +88,7 @@ public class DfsService {
 
         @Override
         public Object call() throws Exception {
+            fileSystem = FileSystem.get(conf);
             deleteDfsSubPaths(path, olderThan);
             return null;
         }
@@ -104,6 +105,7 @@ public class DfsService {
                 }
                 RemoteIterator<LocatedFileStatus> it = fileSystem.listLocatedStatus(pathToWalk);
                 while (it.hasNext()) {
+                    totalCount.incrementAndGet();
                     LocatedFileStatus lfs = it.next();
                     LocalDate epoch = Instant.ofEpochMilli(lfs.getModificationTime())
                             .atZone(ZoneId.systemDefault()).toLocalDate();
@@ -136,17 +138,17 @@ public class DfsService {
                             fileSystem.delete(lfs.getPath(), Boolean.FALSE);
 
                             deleteCount.incrementAndGet();
-                            if ((stack.size() != 0 && stack.size() % 100 == 0)
-                                    || (totalCount.get() != 0 && totalCount.get() % 100 == 0)
-                                    || (deleteCount.get() != 0 && deleteCount.get() % 100 == 0)
-                                ) {
-                                LOG.info("Delete count {} , Total count {}, stack size {}", deleteCount.get(), totalCount.get(), stack.size());
-                            }
                         }
                     } else {
                         if (verbose) {
                             LOG.info("Not deleting {} count:{}", lfs.getPath(), objectCount);
                         }
+                    }
+                    if ((stack.size() != 0 && stack.size() % 100 == 0)
+                            || (totalCount.get() != 0 && totalCount.get() % 1000 == 0)
+                            || (deleteCount.get() != 0 && deleteCount.get() % 100 == 0)
+                    ) {
+                        LOG.info("Delete count {}, Total count {}, stack size {}", deleteCount.get(), totalCount.get(), stack.size());
                     }
                 }
                 if (verbose) {

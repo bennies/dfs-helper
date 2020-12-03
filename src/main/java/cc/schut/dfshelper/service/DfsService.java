@@ -19,8 +19,8 @@ import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Stack;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -41,6 +41,7 @@ public class DfsService {
 
     private AtomicLong deleteCount = new AtomicLong(0);
     private AtomicLong totalCount = new AtomicLong(0);
+    private ConcurrentLinkedDeque<Path> stack = new ConcurrentLinkedDeque();
 
     @PostConstruct
     public void init() throws IOException {
@@ -93,12 +94,10 @@ public class DfsService {
             return null;
         }
 
-        private Stack<Path> stack = new Stack();
-
         public void deleteDfsSubPaths(Path path, long olderThan) throws IOException, InterruptedException {
             LocalDate now = LocalDate.now();
             stack.push(path);
-            while (!stack.empty()) {
+            while (!stack.isEmpty()) {
                 Path pathToWalk = stack.pop();
                 if (verbose) {
                     LOG.info("Starting dfs scan on path {}", pathToWalk);
